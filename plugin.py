@@ -57,7 +57,7 @@ class SQLiteWhatisDB(object):
             db.close()
 
     def _getDb(self, channel):
-        if True or channel not in self.dbs:
+        if channel not in self.dbs:
             filename = plugins.makeChannelFilename(self.filename, channel)
             self.dbs[channel] = sqlite3.connect(filename)
             c = self.dbs[channel].execute("PRAGMA user_version");
@@ -83,6 +83,8 @@ class SQLiteWhatisDB(object):
         return None
 
     def addReaction(self, channel, pattern, reaction, person=None, frequency=1):
+        if person is None:
+            person = "my own instincts"
         c = self._getDb(channel).cursor()
         c.execute("SELECT reaction, pattern, person FROM Reactions WHERE pattern = ? AND reaction = ?", (pattern, reaction))
         res = c.fetchone()
@@ -92,16 +94,12 @@ class SQLiteWhatisDB(object):
         else:
             return [res[0], res[1], res[2]]
 
-    def forgetReaction(self, channel, pattern, reaction=None):
+    def forgetReaction(self, channel, pattern):
         c = self._getDb(channel).cursor()
-        if reaction is not None:
-            c.execute("SELECT reaction FROM Reactions WHERE pattern = ?", (pattern))
-            res = c.fetchone()
-            if len(res) > 1:
-                return None
-            reaction = res[0]
-        c.execute("DELETE FROM Reactions WHERE pattern = ? and reaction = ?", (pattern, res[0]))
-        return True
+        res = c.execute("DELETE FROM Reactions WHERE pattern = ?",
+                (pattern,))
+        self._getDb(channel).commit()
+        return bool(res.rowcount > 0)
 
 class DbmWhatisDB(object):
     def __init__(self, filename):
@@ -202,12 +200,13 @@ class Whatis(callbacks.PluginRegexp):
     threaded = False
 
     def __init__(self, irc):
-        super(Whatis, self).__init__(irc)
+        self.__parent = super(Whatis, self)
+        self.__parent.__init__(irc)
         self.db = WhatisDB()
         self.explanations = ircutils.IrcDict()
 
     def die(self):
-        super(Whatis, self).die()
+        self.__parent.die()
         self.db.close()
 
     def explain(self, irc, msg, args, channel, text):
@@ -219,11 +218,12 @@ class Whatis(callbacks.PluginRegexp):
         if (not text):
             if (channel in self.explanations.keys()):
                 explanation = self.explanations[channel]
-                nick = explanation[0]
-                pattern = explanation[2]
-                reaction = explanation[1]
+                reaction = explanation[0]
+                pattern = explanation[1]
+                nick = explanation[2]
                 freq = explanation[3]
-                irc.reply("%s taught me that '%s' was '%s' %s of the time" % (nick, pattern, reaction, freq))
+                irc.reply("%s taught me that '%s' was '%s' %s%% of the time" %
+                        (nick, pattern, reaction, freq*100))
             else:
                 irc.reply("I haven't said anything yet.")
         else:
@@ -235,20 +235,11 @@ class Whatis(callbacks.PluginRegexp):
 
         Forgets responding to <pattern> with <reaction> in <channel>
         """
-        matchGroups = re.match('(.+)\s+is\s+(.+)').groups
-        if matchGroups:
-            if (self.db.forgetReaction(channel, matchGroups[0], matchGroups[1])):
-                irc.replySuccess()
-            else:
-                irc.reply("I don't remember anything about that."%text)
+        if self.db.forgetReaction(channel, text):
+            irc.replySuccess()
         else:
-            result = self.db.forgetReaction(channel, text)
-            if self.db.forgetReaction(channel, text) == True:
-                irc.replySuccess()
-            elif result is False:
-                irc.reply("I don't remember anything about that.")
-            else:
-                irc.reply("You'll have to give a specific definition to forget, please.")
+            irc.reply("I don't remember anything about that.")
+
     forget = wrap(forget, ['channeldb', 'text'])
 
     def doRemember(self, irc, msg, match):
@@ -260,7 +251,7 @@ class Whatis(callbacks.PluginRegexp):
         (key, value) = match.groups()
         self.log.debug("Learning that '%s' means '%s'!", key, value)
         channel = plugins.getChannel(msg.args[0])
-        prev = self.db.addReaction(channel, key, value)
+        prev = self.db.addReaction(channel, key, value, irc.nick)
         msg.tag("repliedTo")
         if (prev and prev[0] == value):
             irc.reply("I already knew that.")
