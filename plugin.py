@@ -202,13 +202,12 @@ class Whatis(callbacks.PluginRegexp):
     threaded = False
 
     def __init__(self, irc):
-        self.__parent = super(Whatis, self)
-        self.__parent.__init__(irc)
+        super(Whatis, self).__init__(irc)
         self.db = WhatisDB()
         self.explanations = ircutils.IrcDict()
 
     def die(self):
-        self.__parent.die()
+        super(Whatis, self).die()
         self.db.close()
 
     def explain(self, irc, msg, args, channel, text):
