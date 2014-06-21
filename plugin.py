@@ -241,7 +241,7 @@ class Whatis(callbacks.PluginRegexp):
         self.log.info("Learning that '%s' means '%s'!", key, value)
         channel = plugins.getChannel(msg.args[0])
         msg.tag("repliedTo")
-        prev = self.db.addReaction(channel, key, value, irc.nick).result()
+        prev = self.db.addReaction(channel, key, value, 'instinct').result()
         if (prev and prev[0] == value):
             irc.reply("I already knew that.")
         elif (prev):
