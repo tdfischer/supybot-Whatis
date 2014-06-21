@@ -27,8 +27,6 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 ###
-import Queue
-
 import supybot.utils as utils
 import supybot.world as world
 from supybot.commands import *
@@ -41,6 +39,84 @@ import random
 import time
 import re
 import sqlite3
+
+import functools
+import Queue
+import threading
+import logging
+
+class Promise(object):
+  def __init__(self):
+    self.event = threading.Event()
+    self.value = None
+    self.exception = None
+  
+  def result(self):
+    logging.debug("Waiting to resolve promise")
+    self.event.wait()
+    logging.debug("Promise finished!")
+    if self.exception is not None:
+        raise self.exception
+    return self.value
+
+  def finish(self, val):
+    self.value = val
+    self.event.set()
+
+  def errored(self, exc):
+    self.exception = exc
+    self.event.set()
+
+class ThreadProtectionFacade(object):
+  def __init__(self, wrappedClass, *args, **kwargs):
+
+    def f(*args, **kwargs):
+      return wrappedClass(*args, **kwargs)
+
+    self.__makeWrapped = f
+    self.__wrapEvent = threading.Event()
+
+    self.__jobs = Queue.Queue()
+    self.__thread = threading.Thread(target=self.__objThread)
+    self.__thread.start()
+
+  def __del__(self):
+    self._dispose()
+
+  def _dispose(self):
+    self.__jobs.put(None)
+
+  def __objThread(self):
+    self._wrapped = self.__makeWrapped()
+    self.__wrapEvent.set()
+    while True:
+      job = self.__jobs.get()
+      if job is None:
+        logging.debug("Quitting job thread")
+        return
+      func, promise = job
+      logging.debug("Processing job %r", func)
+      try:
+          promise.finish(func())
+      except Exception, e:
+          promise.errored(e)
+
+  def __schedule(self, func, *args, **kwargs):
+    p = Promise()
+    logging.debug("Scheduling %r", func)
+    self.__jobs.put((functools.partial(func, *args, **kwargs), p))
+    return p
+
+  def __getattr__(self, key): 
+    self.__wrapEvent.wait()
+    val = getattr(self._wrapped, key)
+    if threading.currentThread() != self.__thread and callable(val):
+      @functools.wraps(val)
+      def schedule(*args, **kwargs):
+        return self.__schedule(val, *args, **kwargs)
+      return schedule
+    else:
+      return val
 
 def regexp(expr, item):
     reg = re.compile(expr)
@@ -200,14 +276,16 @@ class Whatis(callbacks.PluginRegexp):
     threaded = False
 
     def __init__(self, irc):
+        self.__jobs = Queue.Queue()
         self.__parent = super(Whatis, self)
         self.__parent.__init__(irc)
-        self.db = WhatisDB()
+        self.db = ThreadProtectionFacade(WhatisDB)
         self.explanations = ircutils.IrcDict()
 
     def die(self):
         self.__parent.die()
         self.db.close()
+        self.db._dispose()
 
     def explain(self, irc, msg, args, channel, text):
         """[<channel>] [<text>]
@@ -227,7 +305,7 @@ class Whatis(callbacks.PluginRegexp):
             else:
                 irc.reply("I haven't said anything yet.")
         else:
-            irc.reply("'%s' is '%s'" % (text, self.db.getReply(channel, text)))
+            irc.reply("'%s' is '%s'" % (text, self.db.getReply(channel, text).result()))
     explain = wrap(explain, ['channeldb', optional('text')])
 
     def forget(self, irc, msg, args, channel, text):
@@ -235,7 +313,7 @@ class Whatis(callbacks.PluginRegexp):
 
         Forgets responding to <pattern> with <reaction> in <channel>
         """
-        if self.db.forgetReaction(channel, text):
+        if self.db.forgetReaction(channel, text).result():
             irc.replySuccess()
         else:
             irc.reply("I don't remember anything about that.")
@@ -249,10 +327,10 @@ class Whatis(callbacks.PluginRegexp):
             return
         addressed = True
         (key, value) = match.groups()
-        self.log.debug("Learning that '%s' means '%s'!", key, value)
+        self.log.info("Learning that '%s' means '%s'!", key, value)
         channel = plugins.getChannel(msg.args[0])
-        prev = self.db.addReaction(channel, key, value, irc.nick)
         msg.tag("repliedTo")
+        prev = self.db.addReaction(channel, key, value, irc.nick).result()
         if (prev and prev[0] == value):
             irc.reply("I already knew that.")
         elif (prev):
@@ -267,7 +345,7 @@ class Whatis(callbacks.PluginRegexp):
                 self._reply(channel, irc, msg, False)
 
     def _reply(self, channel, irc, msg, direct):
-        reaction = self.db.getReaction(channel, ' '.join(msg.args[1:]))
+        reaction = self.db.getReaction(channel, ' '.join(msg.args[1:])).result()
         if (reaction):
             self.explanations[channel] = reaction
             reply = (reaction[1], reaction[0].replace("$nick", msg.nick))
