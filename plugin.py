@@ -177,95 +177,6 @@ class SQLiteWhatisDB(object):
         self._getDb(channel).commit()
         return bool(res.rowcount > 0)
 
-class DbmWhatisDB(object):
-    def __init__(self, filename):
-        self.dbs = ircutils.IrcDict()
-        self.filename = filename
-    def close(self):
-        for db in self.dbs.values():
-            db.close()
-
-    def _getDb(self, channel):
-        if channel not in self.dbs:
-            filename = plugins.makeChannelFilename(self.filename, channel)
-            self.dbs[channel] = anydbm.open(filename, 'c')
-        return self.dbs[channel]
-    
-    def _flush(self, db):
-        if hasattr(db, 'sync'):
-            db.sync()
-        if hasattr(db, 'flush'):
-            db.flush()
-
-    def keys(self, channel):
-        return self._getDb(channel).keys()
-
-    def addReply(self, channel, match, reply):
-        ret = None
-        db = self._getDb(channel)
-        if (match in db):
-            ret = db[match]
-            db[match] = '|'.join(db[match].split('|')+reply)
-        else:
-            db[match] = reply
-
-    def addReaction(self, channel, match, reply):
-        ret = None
-        db = self._getDb(channel)
-        if (match in db):
-            ret = db[match]
-        db[match] = reply
-        return ret
-
-    def hasReply(self, channel, match):
-        return match in self._getDb(channel)
-
-    def getReply(self, channel, match):
-        db = self._getDb(channel)
-        if (match in db):
-            return db[match]
-        return None
-
-    def getMatches(self, channel, needle):
-        db = self._getDb(channel)
-        matches = []
-        for pattern in db.keys():
-            try:
-                if (re.match(pattern, needle)):
-                    matches.append((pattern, db[pattern]))
-            except:
-                if (needle.find(pattern) > -1):
-                    matches.append((pattern, db[pattern]))
-        return matches
-
-    def searchPatterns(self, channel, needle):
-        db = self._getDb(channel)
-        matches = []
-        for pattern in db.keys():
-            try:
-                if (pattern == needle):
-                    matches.append((pattern, db[pattern]))
-                elif (re.match(needle, pattern)):
-                    matches.append((pattern, db[pattern]))
-            except:
-                if (needle.find(pattern) > -1):
-                    matches.append((pattern, db[pattern]))
-        return matches
-
-    def forgetPattern(self, channel, pattern):
-        db = self._getDb(channel)
-        if (pattern in db):
-            del db[pattern]
-            return True
-        return False
-
-    def generateReply(self, channel, text):
-        matches = self.getMatches(channel, text)
-        if (len(matches)>=1):
-            return random.choice(matches)
-        else:
-            return None
-
 WhatisDB = plugins.DB('Whatis', {'sqlite': SQLiteWhatisDB})
 
 class Whatis(callbacks.PluginRegexp):
@@ -359,9 +270,6 @@ class Whatis(callbacks.PluginRegexp):
         else:
             return False
 
-
-
 Class = Whatis 
-
 
 # vim:set shiftwidth=4 softtabstop=4 expandtab textwidth=79:
