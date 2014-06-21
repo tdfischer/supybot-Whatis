@@ -136,6 +136,7 @@ class SQLiteWhatisDB(object):
         if channel not in self.dbs:
             filename = plugins.makeChannelFilename(self.filename, channel)
             self.dbs[channel] = sqlite3.connect(filename)
+            self.dbs[channel].text_factory = str
             c = self.dbs[channel].execute("PRAGMA user_version");
             version = c.fetchone()[0]
             self._upgradeDb(self.dbs[channel], version)
