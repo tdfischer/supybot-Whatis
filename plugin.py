@@ -120,6 +120,7 @@ class ThreadProtectionFacade(object):
 
 def regexp(expr, item):
     reg = re.compile(expr)
+    logging.info("Matched %r against %r to get %r", expr, item, reg)
     return reg.search(item) is not None
 
 class SQLiteWhatisDB(object):
@@ -153,7 +154,7 @@ class SQLiteWhatisDB(object):
 
     def getReaction(self, channel, text):
         c = self._getDb(channel).cursor()
-        c.execute("SELECT reaction, pattern, person, frequency FROM Reactions WHERE pattern REGEXP ? ORDER BY RANDOM() * frequency LIMIT 1", (text,))
+        c.execute("SELECT reaction, pattern, person, frequency FROM Reactions WHERE REGEXP(pattern, ?) ORDER BY RANDOM() * frequency LIMIT 1", (text,))
         res = c.fetchone()
         if res:
             return (res[0], res[1], res[2], res[3])
@@ -258,6 +259,7 @@ class Whatis(callbacks.PluginRegexp):
 
     def _reply(self, channel, irc, msg, direct):
         reaction = self.db.getReaction(channel, ' '.join(msg.args[1:])).result()
+        self.log.info("Got reaction for %r: %r", ' '.join(msg.args[1:]), reaction)
         if (reaction):
             self.explanations[channel] = reaction
             reply = (reaction[1], reaction[0].replace("$nick", msg.nick))
