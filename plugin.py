@@ -320,6 +320,8 @@ class Whatis(callbacks.PluginRegexp):
             self.explanations[channel] = reaction
             tag, text = self.extractTag(reaction['reaction'])
 
+            text = text.replace('$nick', msg.nick)
+
             if tag == 'action':
                 irc.reply(text, action=True)
             elif tag == 'reply':
