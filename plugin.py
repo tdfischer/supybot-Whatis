@@ -152,30 +152,49 @@ class SQLiteWhatisDB(object):
         db.execute("PRAGMA user_version=%i"%current)
         db.commit()
 
-    def getReaction(self, channel, text):
+    def getReactions(self, channel, pattern):
+        c = self._getDb(channel).cursor()
+        c.execute("SELECT reaction, pattern, person, frequency FROM Reactions WHERE pattern = ? ORDER BY reaction", (pattern,))
+
+        ret = []
+
+        for reaction in c:
+            ret.append({
+                'reaction': reaction[0],
+                'pattern': reaction[1],
+                'person': reaction[2],
+                'frequency': reaction[3]
+            })
+        return ret
+
+    def produceReaction(self, channel, text):
         c = self._getDb(channel).cursor()
         c.execute("SELECT reaction, pattern, person, frequency FROM Reactions WHERE REGEXP(pattern, ?) ORDER BY RANDOM() * frequency LIMIT 1", (text,))
         res = c.fetchone()
         if res:
-            return (res[0], res[1], res[2], res[3])
+            return {
+                'reaction': res[0],
+                'pattern': res[1],
+                'person': res[2],
+                'frequency': res[3]
+            }
         return None
 
     def addReaction(self, channel, pattern, reaction, person=None, frequency=1):
         if person is None:
-            person = "my own instincts"
+            person = "instinct"
         c = self._getDb(channel).cursor()
-        c.execute("SELECT reaction, pattern, person FROM Reactions WHERE pattern = ? AND reaction = ?", (pattern, reaction))
-        res = c.fetchone()
-        if res == None:
-            c.execute("INSERT INTO Reactions (pattern, reaction, person, frequency) VALUES (?, ?, ?, ?)", (pattern, reaction, person, frequency))
-            self._getDb(channel).commit()
-        else:
-            return [res[0], res[1], res[2]]
+        try:
+            c.execute("INSERT OR ABORT INTO Reactions (pattern, reaction, person, frequency) VALUES (?, ?, ?, ?)", (pattern, reaction, person, frequency))
+            return True
+        except:
+            return False
 
-    def forgetReaction(self, channel, pattern):
+
+    def forgetReaction(self, channel, pattern, reaction):
         c = self._getDb(channel).cursor()
-        res = c.execute("DELETE FROM Reactions WHERE pattern = ?",
-                (pattern,))
+        res = c.execute("DELETE FROM Reactions WHERE pattern = ? AND reaction = ?",
+                (pattern,reaction))
         self._getDb(channel).commit()
         return bool(res.rowcount > 0)
 
@@ -185,7 +204,6 @@ class Whatis(callbacks.PluginRegexp):
     """Add the help for "@plugin help Whatis" here
     This should describe *how* to use this plugin."""
     addressedRegexps = ['doRemember']
-    unaddressedRegexps = ['doRemember']
     threaded = False
 
     def __init__(self, irc):
@@ -213,62 +231,91 @@ class Whatis(callbacks.PluginRegexp):
                 pattern = explanation[1]
                 nick = explanation[2]
                 freq = explanation[3]
-                irc.reply("%s taught me that '%s' was '%s' %s%% of the time" %
-                        (nick, pattern, reaction, freq*100))
+                irc.reply("%(person)s taught me that '%(pattern)s' was '%(reaction)s' %(frequency)f% of the time" % reaction)
             else:
                 irc.reply("I haven't said anything yet.")
         else:
-            irc.reply("'%s' is '%s'" % (text, self.db.getReply(channel, text).result()))
+            reactions = self.db.getReactions(channel, text).result()
+            if len(reactions) == 0:
+                irc.reply("I have no idea what you are talking about.")
+            else:
+                reactions = map(lambda r: "%(person)s: P('%(reaction)s')=%(frequency).1f"%r, reactions)
+                irc.reply(("'%s' is "%(text))+', '.join(reactions))
+
     explain = wrap(explain, ['channeldb', optional('text')])
 
     def forget(self, irc, msg, args, channel, text):
-        """[<channel>] <pattern> is <reaction>
+        """[<channel>] [that] <text> OR [that] <pattern> is <text>
 
-        Forgets responding to <pattern> with <reaction> in <channel>
+        Asks me to forget the latest thing I said about <text>, if I can
+        remember what it was or you tell me. The 'that' is optional syntactic
+        sugar.
         """
-        if self.db.forgetReaction(channel, text).result():
-            irc.replySuccess()
-        else:
+
+        text = re.match("(?:that )?(.+)", text).groups()[0]
+        definitionSplit = re.match("(.+)\s+is\s+(.+)", text)
+        if definitionSplit:
+            pattern, reaction = definitionSplit.groups()
+            if self.db.forgetReaction(channel, pattern, reaction).result():
+                irc.replySuccess()
+                return
+        if channel in self.explanations and self.explanations[channel]['pattern'] == text:
+            if self.db.forgetReaction(channel, text, self.explanations[channel]['reaction']):
+                irc.replySuccess()
+
+        reactions = self.db.getReactions(channel, text).result()
+
+        if len(reactions) == 1:
+            if self.db.forgetReaction(channel, text, reactions[0]['reaction']):
+                irc.replySuccess()
+        elif len(reactions) == 1:
             irc.reply("I don't remember anything about that.")
+        else:
+            irc.reply("You'll have to be more specific about what I'm forgetting.")
 
     forget = wrap(forget, ['channeldb', 'text'])
 
     def doRemember(self, irc, msg, match):
         r'(.+)\s+is\s+(.+)'
-        text = callbacks.addressed(irc.nick, msg)
-        if not text:
+        if not callbacks.addressed(irc.nick, msg):
             return
-        addressed = True
-        (key, value) = match.groups()
-        self.log.info("Learning that '%s' means '%s'!", key, value)
+
+        (pattern, reaction) = match.groups()
+        self.log.info("Learning that '%s' means '%s'!", pattern, reaction)
         channel = plugins.getChannel(msg.args[0])
         msg.tag("repliedTo")
-        prev = self.db.addReaction(channel, key, value, 'instinct').result()
-        if (prev and prev[0] == value):
-            irc.reply("I already knew that.")
-        elif (prev):
-            irc.reply("forgot that %s told me %s meant %s"%(prev[2], prev[1], prev[0]), action=True)
+
+        if self.db.addReaction(channel, pattern, reaction).result():
+            existing = self.db.getReactions(channel, pattern).result()
+            if len(existing) > 1:
+                irc.reply("I now have %d meanings for %s."%(len(existing), pattern))
+            else:
+                irc.replySuccess()
         else:
-            irc.replySuccess()
+            irc.reply("I already knew that.")
 
     def doPrivmsg(self, irc, msg):
         if (irc.isChannel(msg.args[0])):
+
             channel = plugins.getChannel(msg.args[0])
-            if (self.registryValue('autoreply', channel) and not msg.tagged("repliedTo")):
+
+            if (not msg.tagged("repliedTo")):
                 self._reply(channel, irc, msg, False)
 
     def _reply(self, channel, irc, msg, direct):
-        reaction = self.db.getReaction(channel, ' '.join(msg.args[1:])).result()
+        reaction = self.db.produceReaction(channel, ' '.join(msg.args[1:])).result()
         self.log.info("Got reaction for %r: %r", ' '.join(msg.args[1:]), reaction)
+
         if (reaction):
+
             self.explanations[channel] = reaction
-            reply = (reaction[1], reaction[0].replace("$nick", msg.nick))
-            if (reply[1].startswith("<action>")):
-                irc.reply(reply[1].replace("<action>", '', 1), action=True)
-            elif (reply[1].startswith("<reply>")):
-                irc.reply(reply[1].replace("<reply>", '', 1), prefixNick=direct)
+
+            if reaction['reaction'].startswith('<action>'):
+                irc.reply(reaction['reaction'].replace('<action>', '', 1), action=True)
+            elif reaction['reaction'].startswith('<reply>'):
+                irc.reply(reaction['reaction'].replace('<reply>', '', 1), prefixNick=direct)
             else:
-                irc.reply("%s is %s" % (reply[0], reply[1]), prefixNick=direct)
+                irc.reply("%(pattern)s is %(reaction)s" % reaction, prefixNick=direct)
             return True
         else:
             return False
