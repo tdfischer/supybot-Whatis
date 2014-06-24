@@ -45,6 +45,41 @@ import Queue
 import threading
 import logging
 
+class QuietNestedCommandsIrcProxy(callbacks.NestedCommandsIrcProxy):
+    def __init__(self, *args, **kwargs):
+        self.savedReply = None
+        super(QuietNestedCommandsIrcProxy, self).__init__(*args, **kwargs)
+
+    def getCommandHelp(self, command, simpleSyntax=None):
+        return ""
+
+    def reply(self, s, msg=None, **kwargs):
+        if msg is None:
+            msg = self.msg
+        self.savedReply = s
+        self.noReply()
+
+    def replyError(self, *args, **kwargs):
+        self.noReply()
+
+    def replySucces(self, *args, **kwargs):
+        self.noReply()
+
+    def _callCommand(self, command, irc, msg, *args, **kwargs):
+        self.log.info('%s called by %q.', callbacks.formatCommand(command), msg.prefix)
+        try:
+            for name in command:
+                cap = callbacks.checkCommandCapability(msg, self, name)
+                if cap:
+                    return
+            try:
+                self.callingCommand = command
+                self.callCommand(command, irc, msg, *args, **kwargs)
+            finally:
+                self.callingCommand = None
+        except:
+            pass
+
 class Promise(object):
   def __init__(self):
     self.event = threading.Event()
@@ -327,8 +362,10 @@ class Whatis(callbacks.PluginRegexp):
             elif tag == 'reply':
                 irc.reply(text, prefixNick=direct)
             elif tag == 'markov':
-                callbacks.NestedCommandsIrcProxy(irc, msg,
-                        ["say", ['markov', text]])
+                proxy = QuietNestedCommandsIrcProxy(irc, msg,
+                        ['markov', text])
+                if proxy.savedReply:
+                    irc.reply(proxy.savedReply, prefixNick=direct)
             else:
                 irc.reply("%(pattern)s is %(reaction)s" % reaction, prefixNick=direct)
             return True
