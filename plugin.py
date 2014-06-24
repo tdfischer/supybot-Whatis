@@ -262,6 +262,7 @@ class Whatis(callbacks.PluginRegexp):
         if channel in self.explanations and self.explanations[channel]['pattern'] == text:
             if self.db.forgetReaction(channel, text, self.explanations[channel]['reaction']):
                 irc.replySuccess()
+                return
 
         reactions = self.db.getReactions(channel, text).result()
 
@@ -302,6 +303,14 @@ class Whatis(callbacks.PluginRegexp):
             if (not msg.tagged("repliedTo")):
                 self._reply(channel, irc, msg, False)
 
+    @staticmethod
+    def extractTag(text):
+        matches = re.match("(<.+>)?(.+)", text)
+        if matches:
+            tag, text = matches.groups()
+            return (tag[1:-1], text)
+        return (None, text)
+
     def _reply(self, channel, irc, msg, direct):
         reaction = self.db.produceReaction(channel, ' '.join(msg.args[1:])).result()
         self.log.info("Got reaction for %r: %r", ' '.join(msg.args[1:]), reaction)
@@ -309,11 +318,15 @@ class Whatis(callbacks.PluginRegexp):
         if (reaction):
 
             self.explanations[channel] = reaction
+            tag, text = self.extractTag(reaction['reaction'])
 
-            if reaction['reaction'].startswith('<action>'):
-                irc.reply(reaction['reaction'].replace('<action>', '', 1), action=True)
-            elif reaction['reaction'].startswith('<reply>'):
-                irc.reply(reaction['reaction'].replace('<reply>', '', 1), prefixNick=direct)
+            if tag == 'action':
+                irc.reply(text, action=True)
+            elif tag == 'reply':
+                irc.reply(text, prefixNick=direct)
+            elif tag == 'markov':
+                callbacks.NestedCommandsIrcProxy(irc, msg,
+                        ["say", ['markov', text]])
             else:
                 irc.reply("%(pattern)s is %(reaction)s" % reaction, prefixNick=direct)
             return True
